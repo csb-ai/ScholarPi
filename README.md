@@ -196,6 +196,50 @@ Invoke-RestMethod http://127.0.0.1:7331/api/health
 
 仅独立只读的整体理解、方法机制和图表任务可进入复用路径。包含历史上下文、笔记、卡片、保存等内容的问题不使用这类跨会话结果；“重新生成”可跳过复用。可复用结果必须已完成、正文非空、带阅读计划且无运行错误。这个条件不是“所有论断正确”的质量保证。复用界面保留原始生成时间、出处和事件，不将历史输出显示为本轮新生成。
 
+## 笔记保存与索引发布的请求顺序
+
+下面是第三张完整链路图，连接网页编辑、业务写入、后台索引以及卡片复习。写入统一经过 Python 知识服务；幂等检查与版本检查保护不同的失败场景。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Web as 工作台
+    participant API as Fastify API
+    participant Knowledge as Python 知识服务
+    participant DB as SQLite
+    participant Index as 后台索引任务
+    Web->>API: 保存笔记、幂等键与期望版本
+    API->>Knowledge: app_operation / save_note
+    Knowledge->>DB: 事务内检查请求身份与当前版本
+    alt 同键同参数的已提交请求
+        DB-->>Knowledge: 原提交结果
+    else 期望版本已过期
+        DB-->>Knowledge: 版本冲突
+    else 允许保存
+        Knowledge->>DB: 保存新版本及对应索引任务
+        DB-->>Knowledge: 新版本与任务信息
+    end
+    Knowledge-->>API: 结果或明确的业务错误
+    API-->>Web: 显示保存结果或冲突
+    Index->>DB: 读取任务指定版本的内容块
+    DB-->>Index: 指定版本的待索引文本
+    Index->>Index: 计算向量
+    Index->>DB: 事务内再次检查对象当前版本
+    alt 仍是同一版本
+        Index->>DB: 发布向量并完成任务
+    else 内容已更新
+        Index->>DB: 将过期任务标记 superseded
+    end
+    Web->>API: 创建解释卡片或提交复习自评
+    API->>Knowledge: 保存快照或计算后的复习状态
+    Knowledge->>DB: 保存卡片、来源关系与复习记录
+    DB-->>Knowledge: 持久结果
+    Knowledge-->>API: 卡片与下次复习时间
+    API-->>Web: 显示卡片与复习安排
+```
+
+响应丢失后，同一幂等键与参数可返回原结果；编辑冲突需要基于新版本处理。索引完成时仍会核对版本，避免旧任务覆盖新内容。解释卡片保留创建时的快照，来源删除只改变可用提示，不重写已经保存的解释与复习历史。SQLite WAL 不代表任意多个业务写入者可以绕过这些约束。
+
 ## 常见问题与当前限制
 
 - **端口已占用：** 启动器会直接停止并指出端口，避免连接到未知服务。如果原 ScholarPi 正在运行，打开其地址继续；否则结束自己的旧启动器，或在 `.env` 调整三个端口后重启，不必结束其他应用。
