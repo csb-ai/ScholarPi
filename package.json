@@ -1,0 +1,37 @@
+{
+  "name": "scholarpi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/web"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "server": "tsx apps/server/src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "npm --workspace apps/web run build"
+  },
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.0.4",
+    "@earendil-works/pi-codemode": "1.0.4",
+    "@earendil-works/pi-coding-agent": "1.0.4",
+    "@fastify/cors": "^11.0.0",
+    "@fastify/multipart": "^9.0.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "dotenv": "^17.0.0",
+    "fastify": "^5.0.0",
+    "ts-fsrs": "^5.0.0",
+    "typebox": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "prettier": "3.9.9",
+    "tsx": "^4.0.0",
+    "typescript": "^5.9.0"
+  },
+  "overrides": {
+    "katex": "0.19.0"
+  }
+}

@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="496" height="30" viewBox="0 0 496 30" role="img" aria-label="论文阅读，原文引用，笔记卡片，知识复习">
+  <style>text{font:12px system-ui,Segoe UI,Arial,sans-serif;fill:#3d4e62}path,rect.icon{stroke:#5266a3;fill:none;stroke-width:1.4}</style>
+  <g><rect width="118" height="28" rx="6" fill="#edf1f8"/><path d="M9 7h7c3 0 4 2 4 3v12c-1-2-3-3-5-3H9zm22 0h-7c-3 0-4 2-4 3v12c1-2 3-3 5-3h6z"/><text x="41" y="18">论文阅读</text></g>
+  <g transform="translate(124)"><rect width="118" height="28" rx="6" fill="#edf1f8"/><path d="M11 9h5l-2 9h-5l2-9m11 0h5l-2 9h-5z"/><text x="36" y="18">原文引用</text></g>
+  <g transform="translate(248)"><rect width="118" height="28" rx="6" fill="#edf1f8"/><rect class="icon" x="10" y="8" width="14" height="14" rx="2"/><path d="M14 12h7M14 16h6"/><text x="36" y="18">笔记卡片</text></g>
+  <g transform="translate(372)"><rect width="124" height="28" rx="6" fill="#edf1f8"/><path d="m10 14 4 4 9-10"/><text x="35" y="18">知识复习</text></g>
+</svg>
