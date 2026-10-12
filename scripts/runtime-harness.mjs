@@ -8,7 +8,7 @@ if (!['on', 'off', 'status'].includes(mode)) {
   console.error('Usage: node scripts/runtime-harness.mjs on|off|status'); process.exit(1);
 }
 const current = fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : '';
-const pattern = /^\s*EXECUTION_HARNESS_ENABLED\s*=.*$/gm;
+const pattern = /^[ \t]*EXECUTION_HARNESS_ENABLED[ \t]*=.*$/gm;
 if (mode !== 'status') {
   const line = `EXECUTION_HARNESS_ENABLED=${mode === 'on'}`;
   const next = pattern.test(current) ? current.replace(pattern, line)
@@ -16,6 +16,6 @@ if (mode !== 'status') {
   fs.writeFileSync(target, next, 'utf8');
   console.log(`Runtime harness ${mode}. Restart npm run dev to apply. Existing data is retained.`);
 } else {
-  const value = [...current.matchAll(/^\s*EXECUTION_HARNESS_ENABLED\s*=\s*(.*?)\s*$/gm)].at(-1)?.[1];
+  const value = [...current.matchAll(/^[ \t]*EXECUTION_HARNESS_ENABLED[ \t]*=[ \t]*(.*?)[ \t\r]*$/gm)].at(-1)?.[1];
   console.log(`Runtime harness: ${value === 'false' ? 'off' : 'on (default)'}.`);
 }
