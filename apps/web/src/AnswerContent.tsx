@@ -36,7 +36,7 @@ export const AnswerContent = memo(function AnswerContent({ text, run, answerId, 
       <div><b>本轮难词，顺手记住</b><span>点术语即可保存解释卡片；正文中的虚线词也可以点。</span></div>
       <div className="term-card-chips">{terms.map(term=><button key={term.term} disabled={saved[term.term]||saving[term.term]} title={term.explanation} onClick={()=>void create(term)}>{saved[term.term]?'✓ ':saving[term.term]?'正在保存… ':'＋ '}{term.term}{saved[term.term]?' · 已建卡':''}</button>)}</div>
       <button className="text-link" disabled={Object.values(saving).some(Boolean)||terms.every(t=>saved[t.term])} onClick={async()=>{for(const term of terms)await create(term);}}>一键保存本轮术语卡片</button>
-    </section> : !streaming ? <div className="answer-card-nudge"><span>想留住某段理解？选中文字即可一键建卡。</span><button onClick={()=>onPrepare(text,run?.evidence||[])}>从这段讲解创建卡片</button></div> : null}
+    </section> : !streaming ? <div className="answer-card-nudge"><span>想留住某段理解？选中文字即可一键建卡。</span><button onClick={()=>onPrepare(text,run?.evidence?.map(item=>item.sourceRef)||[])}>从这段讲解创建卡片</button></div> : null}
     <div className="prose"><Markdown text={streaming?deferred:text} onSourceId={onSourceId} terms={terms} onTerm={createByName}/></div>
   </>;
 });
