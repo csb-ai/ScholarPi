@@ -3,15 +3,19 @@ import type { RunEvent, RunSnapshot } from '../../../packages/contracts/index.js
 import fs from 'node:fs';
 import path from 'node:path';
 import { ROOT } from './config.js';
+import { RunDiagnosticsCollector } from './run-diagnostics.js';
 export class RunEvents {
   readonly emitter = new EventEmitter();
   private seq = 0;
   readonly recent: RunEvent[] = [];
+  readonly diagnostics = new RunDiagnosticsCollector();
   constructor(readonly snapshot: RunSnapshot) {
     this.emitter.setMaxListeners(40);
+    snapshot.diagnostics = this.diagnostics.value;
   }
   emit(type: string, payload: unknown) {
     const e: RunEvent = { runId: this.snapshot.runId, seq: ++this.seq, type, payload };
+    this.diagnostics.observe(e);
     this.recent.push(e);
     if (this.recent.length > 512) this.recent.shift();
     fs.appendFileSync(

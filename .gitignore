@@ -23,5 +23,6 @@ services/knowledge/scholarpi_knowledge/*_smoke.py
 scripts/*
 !scripts/setup.mjs
 !scripts/dev.mjs
+!scripts/runtime-harness.mjs
 *.tsbuildinfo
 *.log

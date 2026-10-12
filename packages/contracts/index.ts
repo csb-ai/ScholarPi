@@ -91,6 +91,21 @@ export type GraphData = {
   edges: { id: string; source: string; target: string; type: string; sourceRef?: SourceRef }[];
 };
 export type RunStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted';
+export type RunDiagnostics = {
+  version: 1;
+  phases: { name: string; durationMs: number }[];
+  calls: { callId: string; parentCallId?: string; kind: string; name: string; status: string; durationMs?: number }[];
+  models: { main: number; verification: number; correction: number };
+  tools: { business: number; control: number; backend: number; failed: number };
+  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; unknownResponses: number };
+  firstTextMs?: number;
+  workMs?: number;
+  cancelRequestedMs?: number;
+  cancelSettleMs?: number;
+  sharedJobId?: string;
+  finished: boolean;
+  limits?: { enabled: boolean; models: number; timeoutMs: number };
+};
 export type RunSnapshot = {
   runId: string;
   sessionId: string;
@@ -124,6 +139,7 @@ export type RunSnapshot = {
   stopReason?: string;
   requestKey?: string;
   requestDigest?: string;
+  diagnostics?: RunDiagnostics;
 };
 export type RunEvent = { runId: string; seq: number; type: string; payload: unknown };
 export type ReadingSummary = Pick<RunSnapshot, 'runId' | 'sessionId' | 'question' | 'action' | 'depth' | 'mode' | 'createdAt' | 'endedAt'>;

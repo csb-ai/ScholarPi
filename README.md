@@ -147,10 +147,16 @@ npm run dev
 | `MCP_URL` | `http://127.0.0.1:7332/mcp`；本地知识服务路径和端口 |
 | `RUN_TIMEOUT_MS` | `180000`，阅读运行截止时间（毫秒） |
 | `MAX_TOOL_CALLS` | `8`，Agent 业务工具尝试上限；不是所有模型调用的总次数 |
+| `MAX_MODEL_CALLS` | `10`，主循环、复核和有限纠正共享的应用层模型调用尝试预算；不包含共享扫描作业 |
+| `EXECUTION_HARNESS_ENABLED` | `true`，启用统一预算、准备阶段至纠正阶段的共同截止时间及取消等待；`false`恢复原执行限制 |
+
+运行过程面板会分别展示主循环、复核与纠正的模型调用，主循环学术/控制工具、后台准备操作、首次正文等待、阶段耗时及Token用量。历史结果保留原始记录，新版摘要不会补造旧运行的数据。执行截止时间从任务开始处理算起，排队另计；共享扫描作业有自己的生命周期。费用未知时不显示为免费。
+
+需要关闭新增执行控制时，运行 `node scripts/runtime-harness.mjs off`，然后重启 `npm run dev`；重新启用使用 `node scripts/runtime-harness.mjs on`。开关保留论文、会话、笔记、卡片及运行记录，诊断摘要仍可查看。
 
 源码锁定 Qwen3-Embedding 模型及 revision；`.env.example` 的 `EMBEDDING_MODEL` 仅作模型说明，当前实现不通过该项动态更换模型。修改嵌入模型还需同步模型版本、向量维度与索引重建逻辑。
 
-公开源码可执行下列检查；完整测试与本地评测材料不随此发行目录发布：
+可执行下列命令检查类型、构建网页并查看服务状态：
 
 ```powershell
 npm run typecheck

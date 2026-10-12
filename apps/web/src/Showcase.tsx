@@ -90,11 +90,30 @@ export function RunTrace({ runId }: { runId: string }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
   const labels: Record<string, string> = { snapshot: '读取开始', plan: '阅读计划', tool: '工具执行', evidence: '取得证据', claims: '论断复核', done: '保存完成', document_progress: '文件处理', verification: '证据核查', support_verification: '支持关系检查' };
+  const phases: Record<string, string> = { queued: '等待开始', preparing: '准备材料', generating: '生成讲解', verifying: '复核证据', correcting: '有限纠正', finalizing: '整理存档' };
+  const seconds = (ms?: number) => ms === undefined ? '—' : `${(ms / 1000).toFixed(2)} 秒`;
+  const d = data?.snapshot.diagnostics;
   return <details className="run-trace" onToggle={e => { if (e.currentTarget.open) load(); }}>
     <summary>运行过程 · 查看这次实际生成的记录</summary>
     {loading && <p>正在读取原始记录…</p>}{error && <p className="error">{error}</p>}
     {data && <>
       <p>原生成时间：{new Date(data.snapshot.createdAt).toLocaleString('zh-CN', { hour12: false })}。状态：{data.snapshot.status}；{data.events.length} 个原始事件。打开记录不会重跑模型。</p>
+      {d && <section className="run-diagnostic" aria-label="运行诊断摘要">
+        <div className="run-diagnostic-heading"><strong>这次阅读做了什么</strong><span>{d.finished ? '已结束' : '进行中'}{data.snapshot.stopReason ? ` · ${data.snapshot.stopReason}` : ''}</span></div>
+        <div className="run-diagnostic-grid">
+          <div><small>主循环 / 复核 / 纠正</small><strong>{d.models.main} / {d.models.verification} / {d.models.correction}</strong><span>模型调用尝试，分开记录</span></div>
+          <div><small>学术工具 / 控制工具</small><strong>{d.tools.business} / {d.tools.control}</strong><span>主循环实际进入执行的工具</span></div>
+          <div><small>后台取证与准备操作</small><strong>{d.tools.backend}</strong><span>不与主循环工具次数混算</span></div>
+          <div><small>首次正文等待</small><strong>{seconds(d.firstTextMs)}</strong><span>从本轮进入队列到首次正文</span></div>
+        </div>
+        <div className="run-phase-list">{d.phases.map((phase, i) => <span key={i}>{phases[phase.name] ?? phase.name}<b>{seconds(phase.durationMs)}</b></span>)}</div>
+        <p className="small muted">Token：输入 {d.tokens.input} · 缓存读取 {d.tokens.cacheRead} · 缓存写入 {d.tokens.cacheWrite} · 输出 {d.tokens.output}；费用未知。{d.tokens.unknownResponses > 0 && ` ${d.tokens.unknownResponses}次响应缺少可确认用量。`}</p>
+        {d.limits && <p className="small muted">{d.limits.enabled ? `统一预算已启用：模型尝试最多${d.limits.models}次，准备材料至复核/纠正共享${Math.round(d.limits.timeoutMs / 1000)}秒执行时间。` : '当前使用原执行限制；调用摘要仍正常记录。'} 排队和共享扫描作业另行记录。</p>}
+        {d.sharedJobId && <p className="small muted">本轮关联文档后台任务；停止阅读会退出等待，后台文档处理可继续。</p>}
+        {d.cancelSettleMs !== undefined && <p className="small muted">停止后退出本轮工作：{seconds(d.cancelSettleMs)}（最终存档请求另计）。</p>}
+        <details><summary>展开调用明细 · {d.calls.length}项</summary><ol className="run-call-list">{d.calls.map(call => <li key={call.callId}><span>{call.kind === 'model' ? ({ main: '主循环模型', verification: '复核模型', correction: '纠正模型' }[call.name] ?? call.name) : call.name}</span><small>{call.status} · {seconds(call.durationMs)}</small></li>)}</ol></details>
+      </section>}
+      {!d && <p className="small muted">历史讲解保留原始事件；分阶段摘要从本次版本开始记录。</p>}
       {data.available ? <ol className="run-timeline">{data.events.filter(e => labels[e.type]).map(e => {
         const p = e.payload as any;
         return <li key={e.seq}><time>{e.timestamp ? new Date(e.timestamp).toLocaleTimeString('zh-CN', { hour12: false }) : `#${e.seq}`}</time>

@@ -33,6 +33,8 @@ import { addUsage } from './metrics.js';
 import { completedText, normalizeSourceLinks } from './presentation.js';
 import { readingResultKey, reusablePaperTask, reusableResult } from './reading-cache.js';
 import { repairToolProtocol } from './tool-protocol.js';
+import { ExecutionHarness, abortable, type ModelStage } from './execution-harness.js';
+import { setTimeout as delay } from 'node:timers/promises';
 
 const BUSINESS = [
   'get_paper_overview',
@@ -77,7 +79,9 @@ type TurnInput = {
   force?: boolean;
 };
 const readingEngine = createHash('sha256').update(JSON.stringify({ model: config.model, baseUrl: config.baseUrl,
+  harness: { enabled: config.executionHarness, maxModels: config.maxModels, timeout: config.runTimeout },
   files: ['apps/server/src/runtime.ts', 'apps/server/src/reading-cache.ts', 'apps/server/src/control.ts',
+    'apps/server/src/execution-harness.ts',
     'apps/server/src/presentation.ts', ...SKILLS.map(s => `skills/${s}/SKILL.md`)]
     .map(p => fs.readFileSync(path.join(ROOT, p), 'utf8')),
 })).digest('hex');
@@ -88,6 +92,8 @@ type Host = {
   plan?: ReadingPlan;
   current?: RunEvents;
   controller?: AbortController;
+  execution?: ExecutionHarness;
+  mainCallId?: string;
   budget?: ToolBudget;
   repair: boolean;
   rounds: number;
@@ -256,7 +262,11 @@ export class ScholarRuntime {
         const u = event.message.usage;
         run.snapshot.usage ??= { input: 0, output: 0, calls: 0 };
         addUsage(run.snapshot.usage, u);
-        run.emit('usage', { ...u, price: 'unknown' });
+        run.emit('usage', { ...u, price: 'unknown', stopReason: event.message.stopReason });
+        if (host.mainCallId) {
+          run.emit('model_call', { callId: host.mainCallId, stage: 'main', status: event.message.stopReason });
+          host.mainCallId = undefined;
+        }
         if (event.message.stopReason === 'error')
           run.snapshot.error = cleanError(event.message.errorMessage ?? '模型失败');
       }
@@ -286,18 +296,21 @@ export class ScholarRuntime {
         return { messages: result.messages };
       });
       pi.on('before_provider_request', (event) => {
-        if (++h.rounds > 8) {
+        if (!h.execution && ++h.rounds > 8) {
           h.current!.snapshot.stopReason = 'model_round_budget';
           h.controller!.abort();
           void h.session.abort();
           return;
         }
+        try { h.mainCallId = this.beginModel(h, h.current!, 'main'); }
+        catch { return; }
         const p = event.payload as {
           messages?: unknown[];
           tools?: { type?: string; function?: { name?: string } }[];
           max_tokens?: number;
         };
         h.current?.emit('provider_request', {
+          callId: h.mainCallId,
           chars: JSON.stringify(p).length,
           messages: p.messages?.length,
           tools: p.tools?.map((t) => ({ type: t.type, name: t.function?.name })),
@@ -305,7 +318,7 @@ export class ScholarRuntime {
         });
       });
       pi.on('after_provider_response', (event) => {
-        h.current?.emit('provider_response', { status: event.status });
+        h.current?.emit('provider_response', { status: event.status, callId: h.mainCallId });
       });
       pi.registerMcpServer('scholarpi', {
         url: config.mcpUrl,
@@ -586,6 +599,8 @@ export class ScholarRuntime {
         }),
       );
       pi.on('tool_call', (event) => {
+        try { h.execution?.check(); }
+        catch { return { block: true, reason: '本轮已停止，不再执行新工具' }; }
         if (event.toolName.startsWith('mcp__')) {
           if (!BUSINESS.some((n) => event.toolName.endsWith('__' + n)))
             return { block: true, reason: '业务白名单外工具' };
@@ -734,6 +749,16 @@ export class ScholarRuntime {
     if (run.snapshot.status === 'cancelled') return;
     h.current = run;
     h.controller = new AbortController();
+    h.mainCallId = undefined;
+    h.execution = config.executionHarness ? new ExecutionHarness({
+      controller: h.controller, timeoutMs: config.runTimeout, maxModels: config.maxModels,
+      onStop: reason => {
+        run.snapshot.stopReason = reason.code;
+        run.emit('execution_stop', { reason: reason.code, message: reason.message });
+        void h.session.abort();
+      },
+    }) : undefined;
+    run.diagnostics.value.limits = { enabled: config.executionHarness, models: config.maxModels, timeoutMs: config.runTimeout };
     h.budget = new ToolBudget(config.maxTools);
     h.repair = false;
     h.rounds = 0;
@@ -741,10 +766,11 @@ export class ScholarRuntime {
       !/不要|禁止|不保存|不写入/.test(input.question) &&
       /保存.*笔记|记到笔记|创建.*卡片|加入卡片|建卡/.test(input.question);
     run.snapshot.status = 'running';
+    run.emit('phase', { stage: 'preparing' });
     run.emit('snapshot', run.snapshot);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      let freshPaper = await knowledge.operation<Paper>('get_paper', {
+      let freshPaper = await this.operation<Paper>(h, run, 'get_paper', {
         paper_id: h.paper.paperId,
         revision_id: h.paper.revisionId,
       });
@@ -757,19 +783,26 @@ export class ScholarRuntime {
           throw Error('论文尚未完成文本解析，请查看导入任务后重试');
         h.controller.signal.throwIfAborted();
         run.emit('document_progress', { status: 'parsing', paperId: freshPaper.paperId });
-        await new Promise((r) => setTimeout(r, 500));
-        freshPaper = await knowledge.operation<Paper>('get_paper', {
+        await delay(500, undefined, { signal: h.execution?.signal });
+        freshPaper = await this.operation<Paper>(h, run, 'get_paper', {
           paper_id: h.paper.paperId,
           revision_id: h.paper.revisionId,
         });
       }
       if (freshPaper.coverage.pendingPages.length) {
-        const job = await ensureVision(freshPaper, (j) => run.emit('document_progress', j));
+        h.execution?.check();
+        const waiting = ensureVision(freshPaper, j => {
+          if (h.current !== run || run.snapshot.status !== 'running') return;
+          run.emit('shared_job', { jobId: j.jobId });
+          run.emit('document_progress', j);
+        });
+        const job = await abortable(waiting, h.execution?.signal);
         if (job?.status !== 'completed') throw Error(job?.error ?? '扫描页仍未处理');
-        h.paper = await knowledge.operation<Paper>('get_paper', { paper_id: h.paper.paperId });
+        if (job) run.emit('shared_job', { jobId: job.jobId });
+        h.paper = await this.operation<Paper>(h, run, 'get_paper', { paper_id: h.paper.paperId });
       }
       h.controller.signal.throwIfAborted();
-      timer = setTimeout(() => {
+      if (!h.execution) timer = setTimeout(() => {
         run.snapshot.stopReason = 'deadline';
         h.controller!.abort();
         void h.session.abort();
@@ -785,11 +818,11 @@ export class ScholarRuntime {
         ...(run.snapshot.mode === 'code' ? ['run_evidence_code'] : business),
       ]);
       if (!h.loaded) {
-        const text = await knowledge.operation<{
+        const text = await this.operation<{
           text: string;
           sourceRefs: SourceRef[];
           coverage: unknown;
-        }>('read_paper_text', { paper_id: h.paper.paperId, revision_id: h.paper.revisionId });
+        }>(h, run, 'read_paper_text', { paper_id: h.paper.paperId, revision_id: h.paper.revisionId });
         for (const ref of text.sourceRefs ?? [])
           h.sourceCache.set(ref.sourceId, { ref, text: ref.quote ?? '' });
         if (text.text.length > 1400000) throw Error('全文超出初始预算，需要分批阅读，未静默截断');
@@ -820,8 +853,8 @@ export class ScholarRuntime {
         });
         h.loaded = true;
       }
-      const retrieval = await knowledge.operation<{ items: Evidence[]; navigation?: unknown }>(
-        'search_knowledge',
+      const retrieval = await this.operation<{ items: Evidence[]; navigation?: unknown }>(
+        h, run, 'search_knowledge',
         { query: input.question, limit: 6, use_graph: true },
       );
       if (run.snapshot.cacheScope === 'paper') {
@@ -864,6 +897,7 @@ export class ScholarRuntime {
         { triggerTurn: false },
       );
       h.controller.signal.throwIfAborted();
+      run.emit('phase', { stage: 'generating' });
       await h.session.prompt(
         `当前论文 ${h.paper.paperId}，版本 ${h.paper.revisionId}。任务 ${input.action ?? 'question'}。用户选择的讲解效果：${({ simple: '建立直觉：用通俗语言和类比，减少公式与术语；首次术语给简洁解释。', standard: '掌握方法：说明输入、关键步骤、输出与适用边界，能复述方法。', technical: '深入技术：解释图表、公式、实验条件和机制细节；定义符号，核对原页。' } as Record<string, string>)[input.depth ?? 'standard']}；本次已按需加载 ${skill}。${run.snapshot.cacheScope === 'paper' ? '本轮是独立的论文阅读任务，只用当前论文原文取证，不以旧聊天或个人笔记替代论文事实。' : ''}计划只在没有时建立一次pending路线，不反复改成done，阅读进度由用户确认。工具调用可以同轮提交计划与claims。SourceRef仅需提供真实sourceId，其余版本/页码由系统解析。\n用户问题：${input.question}`,
       );
@@ -875,6 +909,8 @@ export class ScholarRuntime {
       delete run.snapshot.error;
       run.snapshot.text = h.session.getLastAssistantText() ?? run.snapshot.text;
       if (!run.snapshot.text.trim()) throw Error('模型未返回最终讲解，已保留工具证据');
+      h.execution?.check();
+      run.emit('phase', { stage: 'verifying' });
       await this.verify(h, run);
       run.snapshot.text = normalizeSourceLinks(
         run.snapshot.text,
@@ -887,6 +923,8 @@ export class ScholarRuntime {
           : 'completed';
       this.editContext(h, run);
     } catch (e) {
+      run.snapshot.stopReason ??= /429|rate_limit_exceeded/i.test(cleanError(e))
+        ? 'provider_rate_limit' : h.controller.signal.aborted ? 'aborted' : 'execution_error';
       run.snapshot.status =
         run.snapshot.status === 'cancelled' || run.snapshot.stopReason === 'deadline'
           ? 'cancelled'
@@ -895,12 +933,27 @@ export class ScholarRuntime {
       run.emit('error', { message: run.snapshot.error });
     } finally {
       clearTimeout(timer);
+      h.execution?.dispose();
+      run.emit('phase', { stage: 'finalizing' });
       run.snapshot.endedAt = new Date().toISOString();
       h.binding.filePath = h.session.sessionFile;
-      await knowledge.operation('session_put', { session: h.binding });
-      await knowledge.operation('run_put', { snapshot: run.snapshot });
-      run.emit('done', run.snapshot);
-      h.current = undefined;
+      try {
+        await knowledge.operation('session_put', { session: h.binding },
+          h.execution ? AbortSignal.timeout(5000) : undefined);
+        run.diagnostics.finish();
+        await knowledge.operation('run_put', { snapshot: run.snapshot },
+          h.execution ? AbortSignal.timeout(5000) : undefined);
+      } catch (error) {
+        run.snapshot.status = 'failed';
+        run.snapshot.error = cleanError(error);
+        run.snapshot.stopReason ??= 'persistence_failed';
+        run.emit('error', { message: '运行内容已保留，最终存档失败：' + run.snapshot.error });
+      } finally {
+        run.diagnostics.finish();
+        run.emit('done', run.snapshot);
+        h.current = undefined;
+        h.execution = undefined;
+      }
     }
   }
   private async verify(h: Host, run: RunEvents) {
@@ -908,7 +961,7 @@ export class ScholarRuntime {
     const check = [] as { claimId: string; text: string; evidence: string[] }[];
     const refs = sourceRefs(claims);
     const verified = refs.length
-      ? await knowledge.operation<{
+      ? await this.operation<{
           items: {
             sourceId: string;
             valid: boolean;
@@ -916,7 +969,7 @@ export class ScholarRuntime {
             ref: SourceRef;
             text: string;
           }[];
-        }>('validate_sources', { source_refs: refs })
+        }>(h, run, 'validate_sources', { source_refs: refs })
       : { items: [] };
     run.emit('source_validation', {
       items: verified.items.map((x) => ({
@@ -972,11 +1025,10 @@ export class ScholarRuntime {
         ),
       ].slice(0, 2);
       for (const page of imagePages) {
-        const image = await knowledge.call(
-          'read_page_image',
-          { paper_id: h.paper.paperId, revision_id: h.paper.revisionId, page },
-          h.controller!.signal,
-        );
+        const image = await this.backend(h, run, 'read_page_image', signal => knowledge.call(
+          'read_page_image', { paper_id: h.paper.paperId, revision_id: h.paper.revisionId, page },
+          signal ?? h.controller!.signal,
+        ));
         images.push(
           ...image.content
             .filter((c) => c.type === 'image' && c.data)
@@ -984,6 +1036,7 @@ export class ScholarRuntime {
         );
       }
       run.emit('verification_images', { pages: imagePages, limit: 2 });
+      const verificationCall = this.beginModel(h, run, 'verification');
       const response = await runtime.completeSimple(
         model,
         {
@@ -1002,11 +1055,12 @@ export class ScholarRuntime {
         },
         {
           maxTokens: 1024,
-          signal: AbortSignal.any([AbortSignal.timeout(30000), h.controller!.signal]),
+          signal: h.execution?.stageSignal(30000) ?? AbortSignal.any([AbortSignal.timeout(30000), h.controller!.signal]),
         },
       );
+      run.emit('model_call', { callId: verificationCall, stage: 'verification', status: response.stopReason });
       addUsage(run.snapshot.usage!, response.usage);
-      run.emit('verification_usage', { ...response.usage, price: 'unknown' });
+      run.emit('verification_usage', { ...response.usage, price: 'unknown', stopReason: response.stopReason });
       const text = response.content
         .filter((x) => x.type === 'text')
         .map((x) => x.text)
@@ -1042,6 +1096,8 @@ export class ScholarRuntime {
     ) {
       const runtime = await modelRuntime(),
         model = runtime.getModel('agnes', config.model)!;
+      run.emit('phase', { stage: 'correcting' });
+      const correctionCall = this.beginModel(h, run, 'correction');
       const correction = await runtime.completeSimple(
         model,
         {
@@ -1057,9 +1113,10 @@ export class ScholarRuntime {
         },
         {
           maxTokens: 2048,
-          signal: AbortSignal.any([AbortSignal.timeout(30000), h.controller!.signal]),
+          signal: h.execution?.stageSignal(30000) ?? AbortSignal.any([AbortSignal.timeout(30000), h.controller!.signal]),
         },
       );
+      run.emit('model_call', { callId: correctionCall, stage: 'correction', status: correction.stopReason });
       addUsage(run.snapshot.usage!, correction.usage);
       run.emit('correction', { status: correction.stopReason, usage: correction.usage, limit: 1 });
       const revised = correction.content
@@ -1077,6 +1134,28 @@ export class ScholarRuntime {
           ? '已完成一次有限纠正。'
           : '纠正尝试未完成，原始回答仍含待核查论断。') +
         '原始支持状态保留在证据栏，请核对原文；模型复核可能出错。';
+    }
+  }
+  private beginModel(h: Host, run: RunEvents, stage: ModelStage) {
+    h.execution?.takeModel(stage);
+    const callId = randomUUID();
+    run.emit('model_call', { callId, stage, status: 'started' });
+    return callId;
+  }
+  private operation<T = Record<string, unknown>>(h: Host, run: RunEvents, name: string, args: Record<string, unknown>) {
+    return this.backend(h, run, name, signal => knowledge.operation<T>(name, args, signal));
+  }
+  private async backend<T>(h: Host, run: RunEvents, name: string, work: (signal?: AbortSignal) => Promise<T>) {
+    h.execution?.check();
+    const callId = randomUUID();
+    run.emit('backend_call', { callId, name, status: 'started' });
+    try {
+      const result = await work(h.execution?.signal);
+      run.emit('backend_call', { callId, name, status: 'finished' });
+      return result;
+    } catch (error) {
+      run.emit('backend_call', { callId, name, status: 'failed' });
+      throw error;
     }
   }
   private editContext(h: Host, run: RunEvents) {
@@ -1124,15 +1203,23 @@ export class ScholarRuntime {
   async cancel(runId: string) {
     const run = this.runs.get(runId);
     if (!run) throw new BusinessError('SOURCE_NOT_FOUND', '运行不存在');
+    if (!['queued', 'running'].includes(run.snapshot.status)) return run.snapshot;
+    run.emit('cancel_requested', {});
     run.snapshot.status = 'cancelled';
     run.snapshot.stopReason = 'user_cancel';
     const host = this.hosts.get(run.snapshot.sessionId);
-    if (host?.current === run) {
+    const active = host?.current === run;
+    if (active) {
+      host.execution?.cancel();
       host.controller?.abort();
       await host.session.abort();
+    } else {
+      run.snapshot.endedAt = new Date().toISOString();
+      run.diagnostics.finish();
     }
     run.emit('snapshot', run.snapshot);
     await knowledge.operation('run_put', { snapshot: run.snapshot });
+    if (!active) run.emit('done', run.snapshot);
     return run.snapshot;
   }
   async setPlan(sessionId: string, plan: ReadingPlan) {
@@ -1147,6 +1234,8 @@ export class ScholarRuntime {
   }
   async close() {
     for (const h of this.hosts.values()) {
+      h.execution?.cancel();
+      h.execution?.dispose();
       await h.session.abort();
       h.session.dispose();
     }

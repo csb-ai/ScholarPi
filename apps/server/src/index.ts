@@ -67,6 +67,7 @@ app.get('/api/health', async () => ({
   configured: !!config.apiKey,
   knowledge: await op('health'),
   protocol: 'JSON tools / Code Mode sandbox',
+  execution: { enabled: config.executionHarness, maxModelCalls: config.maxModels, runTimeoutMs: config.runTimeout },
 }));
 app.get('/api/papers', async () => op('list_papers'));
 app.post('/api/papers', async (request, reply) => {

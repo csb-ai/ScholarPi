@@ -1,6 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { config } from './config.js';
+import { abortable } from './execution-harness.js';
 export type McpResult = {
   content: { type: string; text?: string; data?: string; mimeType?: string }[];
   structuredContent?: Record<string, unknown>;
@@ -37,7 +38,9 @@ export class KnowledgeClient {
     signal?: AbortSignal,
   ): Promise<McpResult> {
     const invoke = async () => {
-      const c = await this.connect();
+      signal?.throwIfAborted();
+      const c = await abortable(this.connect(), signal);
+      signal?.throwIfAborted();
       return (await c.callTool({ name, arguments: args }, undefined, {
         signal,
         timeout: 60000,
@@ -63,8 +66,9 @@ export class KnowledgeClient {
   async operation<T = Record<string, unknown>>(
     operation: string,
     args: Record<string, unknown> = {},
+    signal?: AbortSignal,
   ): Promise<T> {
-    const r = await this.call('app_operation', { operation, args });
+    const r = await this.call('app_operation', { operation, args }, signal);
     const data =
       r.structuredContent ??
       JSON.parse(

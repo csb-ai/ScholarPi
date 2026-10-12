@@ -4,14 +4,20 @@ import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 dotenv.config({ path: path.join(ROOT, '.env'), quiet: true });
+function positiveInt(value: string | undefined, fallback: number) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : fallback;
+}
 export const config = {
   model: process.env.AGNES_MODEL ?? 'agnes-3.0-flash',
   baseUrl: process.env.AGNES_BASE_URL ?? 'https://apihub.agnes-ai.com/v1',
   apiKey: process.env.AGNES_API_KEY ?? '',
   mcpUrl: process.env.MCP_URL ?? 'http://127.0.0.1:7332/mcp',
   port: Number(process.env.SERVER_PORT ?? 7331),
-  runTimeout: Number(process.env.RUN_TIMEOUT_MS ?? 180000),
+  runTimeout: positiveInt(process.env.RUN_TIMEOUT_MS, 180000),
   maxTools: Number(process.env.MAX_TOOL_CALLS ?? 8),
+  executionHarness: process.env.EXECUTION_HARNESS_ENABLED !== 'false',
+  maxModels: positiveInt(process.env.MAX_MODEL_CALLS, 10),
 };
 for (const dir of [
   'data/uploads',
