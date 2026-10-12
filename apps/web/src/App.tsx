@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
   BookOpen,
   Plus,
@@ -33,6 +33,7 @@ import { api, json, key } from './api';
 import PdfViewer from './PdfViewer';
 import { Markdown, Sources, Notes, Cards, CardDialog, Graph, Search } from './Knowledge';
 import { HomePage, GuidePage, RunTrace, type PageView } from './Showcase';
+import { AnswerContent, type AnswerTerm } from './AnswerContent';
 type Tab = 'read' | 'notes' | 'cards' | 'graph' | 'search';
 type Message = { role: 'user' | 'assistant'; text: string; run?: RunSnapshot };
 const statusLabel: Record<string, string> = {
@@ -57,9 +58,14 @@ export default function App() {
   const [selected, setSelected] = useState<Paper>();
   const [health, setHealth] = useState<any>();
   const [tab, setTab] = useState<Tab>('read');
+  const [globalNotes, setGlobalNotes] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [draggingFile, setDraggingFile] = useState(false);
+  const [importProgress, setImportProgress] = useState('');
+  const dragDepth = useRef(0);
+  const importBatch = useRef(false);
   const [session, setSession] = useState('');
   const [plan, setPlan] = useState<ReadingPlan>();
   const [messages, setMessages] = useState<Message[]>([]);
@@ -74,6 +80,13 @@ export default function App() {
   const [viewer, setViewer] = useState(() => window.matchMedia('(min-width:901px)').matches);
   const [cardDraft, setCardDraft] = useState<any>();
   const [cardRevision, setCardRevision] = useState(0);
+  const [cardToast, setCardToast] = useState('');
+  const [textSelection, setTextSelection] = useState<{text:string;left:number;top:number;sourceRef?:SourceRef}>();
+  const cardRequests = useRef(new Map<string,{id:string;saved?:boolean;promise?:Promise<boolean>}>());
+  const createTermLatest = useRef(createTermCard);
+  createTermLatest.current = createTermCard;
+  const onCreateTerm = useCallback((term:AnswerTerm,answerId:string)=>createTermLatest.current(term,answerId),[]);
+  const prepareCard = useCallback((text:string,refs:SourceRef[])=>setCardDraft({front:'回忆这段讲解的关键观点',back:text,origin:'selection',sourceRef:refs[0]}),[]);
   const [noteSeed, setNoteSeed] = useState<{
     markdown: string;
     sourceRefs: SourceRef[];
@@ -87,18 +100,63 @@ export default function App() {
   const seq = useRef(0);
   const bottom = useRef<HTMLDivElement>(null);
   const contentScroll = useRef<HTMLDivElement>(null);
+  const followBottom = useRef(true);
+  const lastScrollTop = useRef(0);
+  const closeViewer = useCallback(() => setViewer(false), []);
+  const [showLatest, setShowLatest] = useState(false);
+  const [jumpRequest, setJumpRequest] = useState(0);
+  const pendingDelta = useRef('');
+  const deltaTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const locateLatest = useRef(locate);
+  locateLatest.current = locate;
+  const openSourceRef = useCallback((ref: SourceRef) => { void locateLatest.current(ref); }, []);
+  const openAnswerSource = useCallback((id: string) => {
+    void api<{ sourceRef: SourceRef }>(`/sources/${encodeURIComponent(id)}`)
+      .then(value => locateLatest.current(value.sourceRef)).catch(e => setError(e.message));
+  }, []);
   const [pendingQuestion, setPendingQuestion] = useState('');
   const busy = run?.status === 'running' || run?.status === 'queued';
   const activeWorkbench = page === 'workbench';
   const showViewer = activeWorkbench && viewer;
   useEffect(() => {
-    contentScroll.current?.scrollTo({ top: 0 });
-  }, [page]);
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types || []).includes('Files');
+    const reset = () => { dragDepth.current = 0; setDraggingFile(false); };
+    const enter = (e: DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth.current++; setDraggingFile(true); };
+    const over = (e: DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = importBatch.current || busy ? 'none' : 'copy'; };
+    const leave = (e: DragEvent) => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth.current=Math.max(0,dragDepth.current-1); if (!dragDepth.current) setDraggingFile(false); };
+    const drop = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault(); reset();
+      const files = Array.from(e.dataTransfer?.files || []);
+      if (!files.length) { setError('请拖入文件；文件夹暂不支持。'); return; }
+      void importFiles(files);
+    };
+    const escape = (e: KeyboardEvent) => { if (e.key==='Escape' && dragDepth.current) { e.preventDefault(); reset(); } };
+    document.addEventListener('dragenter',enter); document.addEventListener('dragover',over);
+    document.addEventListener('dragleave',leave); document.addEventListener('drop',drop);
+    document.addEventListener('dragend',reset); document.addEventListener('keydown',escape); window.addEventListener('blur',reset);
+    return () => { document.removeEventListener('dragenter',enter); document.removeEventListener('dragover',over); document.removeEventListener('dragleave',leave); document.removeEventListener('drop',drop); document.removeEventListener('dragend',reset); document.removeEventListener('keydown',escape); window.removeEventListener('blur',reset); };
+  }, [busy, uploading]);
+  useLayoutEffect(() => {
+    const element = contentScroll.current;
+    if (!element) return;
+    if (page === 'workbench' && tab === 'read') {
+      followBottom.current = true; setShowLatest(false);
+      element.scrollTop = element.scrollHeight;lastScrollTop.current=element.scrollTop;
+    } else element.scrollTop = 0;
+  }, [page, tab, session, jumpRequest]);
   function navigate(next: PageView) {
     setPage(next);
     if (location.hash !== '#' + next) location.hash = next;
     setError('');
     setNotice('');
+  }
+  function openKnowledge(kind: 'notes' | 'cards') {
+    setGlobalNotes(true);
+    setSource(undefined);
+    setViewer(false);
+    setTab(kind);
+    navigate('workbench');
   }
   useEffect(() => {
     const changed = () => setPage(routePage());
@@ -130,13 +188,95 @@ export default function App() {
       .catch((e) => setError(e.message));
     return () => stream.current?.close();
   }, []);
+  useLayoutEffect(() => {
+    const element = contentScroll.current;
+    if (page !== 'workbench' || tab !== 'read' || !element) return;
+    if (followBottom.current) { element.scrollTop = element.scrollHeight;lastScrollTop.current=element.scrollTop; }
+    else setShowLatest(true);
+  }, [run?.text, messages.length, page, tab]);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [run?.text, messages.length]);
+    const element = contentScroll.current;
+    const conversation = element?.querySelector('.conversation');
+    if (!element || !conversation || page !== 'workbench' || tab !== 'read') return;
+    const observer = new ResizeObserver(() => {
+      if (followBottom.current) { element.scrollTop = element.scrollHeight;lastScrollTop.current=element.scrollTop; }
+    });
+    observer.observe(conversation);
+    return () => observer.disconnect();
+  }, [page, tab, session]);
+  function flushDelta() {
+    if (deltaTimer.current) clearTimeout(deltaTimer.current);
+    deltaTimer.current = undefined;
+    const text = pendingDelta.current; pendingDelta.current = '';
+    if (text) setRun(current => current ? { ...current, text: current.text + text } : current);
+  }
+  function discardDelta() {
+    if (deltaTimer.current) clearTimeout(deltaTimer.current);
+    deltaTimer.current=undefined;pendingDelta.current='';
+  }
+  useEffect(() => () => discardDelta(), []);
+  function jumpToLatest() {
+    followBottom.current=true;setShowLatest(false);
+    const element=contentScroll.current;if(element) {element.scrollTop=element.scrollHeight;lastScrollTop.current=element.scrollTop;}
+  }
+  useEffect(()=>{if(!cardToast)return;const timer=setTimeout(()=>setCardToast(''),6500);return()=>clearTimeout(timer);},[cardToast]);
+  useEffect(()=>{setTextSelection(undefined);},[page,tab,session]);
+  async function createTermCard(term:AnswerTerm,answerId:string):Promise<boolean> {
+    const signature=JSON.stringify({answerId,term:term.term,explanation:term.explanation,refs:term.sourceRefs});
+    const entry:{id:string;saved?:boolean;promise?:Promise<boolean>}=cardRequests.current.get(signature)||{id:key()};
+    cardRequests.current.set(signature,entry);
+    if(entry.saved){setCardToast(`「${term.term}」已经保存在知识卡片中。`);return true;}
+    if(entry.promise)return entry.promise;
+    entry.promise=(async()=>{
+      try {
+        await api('/cards',{method:'POST',body:json({front:term.term,back:term.explanation,origin:'keyword',keyword:term.term,sourceRef:term.sourceRefs[0],idempotencyKey:entry.id})});
+        entry.saved=true;setCardRevision(n=>n+1);setCardToast(`已保存「${term.term}」知识卡片，可以稍后翻面复习。`);return true;
+      } catch(e){setError((e as Error).message);setCardToast(`建卡未成功：${(e as Error).message}`);return false;}
+      finally{entry.promise=undefined;}
+    })();
+    return entry.promise;
+  }
+  function captureSelection() {
+    const selection=window.getSelection();
+    const text=selection?.toString().trim();
+    if(!selection||!text||!selection.rangeCount||text.length>12000){setTextSelection(undefined);return;}
+    const range=selection.getRangeAt(0);
+    const element=(range.commonAncestorContainer.nodeType===Node.ELEMENT_NODE?range.commonAncestorContainer:range.commonAncestorContainer.parentElement) as Element|null;
+    const answer=element?.closest<HTMLElement>('.message.assistant');
+    const note=element?.closest<HTMLElement>('.note-edit-workspace');
+    const scope=answer||note;
+    if(!scope||!scope.contains(range.startContainer)||!scope.contains(range.endContainer)){setTextSelection(undefined);return;}
+    let sourceRef:SourceRef|undefined;
+    if(note?.dataset.noteSource){try{sourceRef=JSON.parse(note.dataset.noteSource);}catch{}}
+    if(answer){
+      const message=messages[Number(answer.dataset.messageIndex)];
+      const sourceId=element?.closest('p,li,blockquote')?.querySelector<HTMLElement>('[data-source-id]')?.dataset.sourceId;
+      if(sourceId)sourceRef=evidenceRefs(message?.run).find(ref=>ref.sourceId===sourceId);
+    }
+    const box=range.getBoundingClientRect();
+    setTextSelection({text,sourceRef,left:Math.min(Math.max(12,box.left),Math.max(12,window.innerWidth-300)),top:Math.min(window.innerHeight-72,Math.max(70,box.bottom+8))});
+  }
+  async function saveSelectionCard() {
+    if(!textSelection)return;
+    const selected=textSelection;setTextSelection(undefined);
+    const front=selected.text.length<=70?selected.text:'回忆这段内容的关键观点';
+    const signature=JSON.stringify({session,text:selected.text,source:selected.sourceRef,kind:'selection'});
+    const entry:{id:string;saved?:boolean;promise?:Promise<boolean>}=cardRequests.current.get(signature)||{id:key()};cardRequests.current.set(signature,entry);
+    if(entry.saved){setCardToast('这段文字已经保存为知识卡片。');return;}
+    if(entry.promise)return;
+    entry.promise=(async()=>{
+      try{await api('/cards',{method:'POST',body:json({front,back:selected.text,origin:'selection',sourceRef:selected.sourceRef,idempotencyKey:entry.id})});entry.saved=true;setCardRevision(n=>n+1);setCardToast('选中文字已保存为知识卡片，可在卡片列表调整题目。');return true;}
+      catch(e){setError((e as Error).message);setCardToast('建卡未成功，请重新选择文字后重试。');return false;}
+      finally{entry.promise=undefined;}
+    })();
+    await entry.promise;
+  }
   useEffect(() => {
     if (selected && session) localStorage.setItem(`scholarpi.session.${selected.paperId}`, session);
   }, [selected?.paperId, session]);
   async function choose(p: Paper, fresh = false) {
+    discardDelta();followBottom.current=true;setJumpRequest(n=>n+1);
+    setGlobalNotes(false);
     navigate('workbench');
     const selectionToken = ++generation.current;
     stream.current?.close();
@@ -194,9 +334,29 @@ export default function App() {
       setError((e as Error).message);
     }
   }
-  async function importPaper(file: File) {
-    setUploading(true);
-    setError('');
+  async function importFiles(files: File[]) {
+    if (importBatch.current || uploading) { setError('正在接收文件，请等本次导入结束后再拖入。'); return; }
+    if (busy) { setError('当前正在生成讲解，请先停止本轮，再导入新资料。'); return; }
+    const failures: string[] = [];
+    const accepted = files.filter(file => {
+      if (!/\.(pdf|txt|md|markdown|docx|png|jpe?g)$/i.test(file.name)) { failures.push(`${file.name}：格式暂不支持，请转为 PDF`); return false; }
+      if (file.size > 100 * 1024 * 1024) { failures.push(`${file.name}：超过 100 MiB`); return false; }
+      return true;
+    });
+    if (!accepted.length) { setError(failures.join('；')); return; }
+    importBatch.current=true; setUploading(true); setError('');
+    let received=0;
+    try {
+      for (let i=0;i<accepted.length;i++) {
+        setImportProgress(`${i+1}/${accepted.length} · ${accepted[i].name}`);
+        const result=await importPaper(accepted[i]);
+        if(result.ok) received++; else failures.push(`${accepted[i].name}：${result.error || '导入失败'}`);
+      }
+      if(accepted.length>1) setNotice(`已接收 ${received} 个文件，重复文件会使用已有记录；解析与索引继续在后台进行。`);
+      if(failures.length) setError(failures.join('；'));
+    } finally { importBatch.current=false;setUploading(false);setImportProgress(''); }
+  }
+  async function importPaper(file: File): Promise<{ ok: boolean; error?: string }> {
     try {
       const form = new FormData();
       form.append('file', file);
@@ -208,13 +368,11 @@ export default function App() {
       await choose(d.paper);
       const importNotice = d.duplicate
         ? 'SHA-256 文件指纹一致，已打开原论文和保存的讲解，没有新增论文或重复解析。'
-        : 'PDF 已接收。请选择阅读目标和讲解效果；解析与索引在后台进行。';
+        : `${file.name} 已接收。${d.paper.conversionNote || ''}请选择阅读目标和讲解效果；解析与索引在后台进行。`;
       setNotice(importNotice);
       if (d.duplicate || !d.jobId || ['ready', 'partial'].includes(d.paper.status)) {
-        setUploading(false);
-        return;
+        return { ok: true };
       }
-      setUploading(false);
       let count = 0;
       const poll = async () => {
         try {
@@ -231,29 +389,29 @@ export default function App() {
               'interrupted',
             ].includes(job.status)
           ) {
-            setUploading(false);
-            const p = await api<Paper>(`/papers/${d.paperId}?revisionId=${d.revisionId}`);
+                const p = await api<Paper>(`/papers/${d.paperId}?revisionId=${d.revisionId}`);
             setSelected(current => current?.paperId === p.paperId && current.revisionId === p.revisionId ? p : current);
             if (job.error) setError(String(job.error));
             return;
           }
           if (count++ < 900) setTimeout(() => void poll(), 2000);
           else {
-            setUploading(false);
-            setError('导入仍在运行，请刷新论文状态。');
+                setError('导入仍在运行，请刷新论文状态。');
           }
         } catch (e) {
-          setUploading(false);
-          setError((e as Error).message);
+            setError((e as Error).message);
         }
       };
       void poll();
+      return { ok: true };
     } catch (e) {
-      setUploading(false);
-      setError((e as Error).message);
+      const detail = (e as Error).message;
+      setError(detail);
+      return { ok: false, error: detail };
     }
   }
   function applySnapshot(snapshot: RunSnapshot) {
+    discardDelta();
     setRun(snapshot);
     if (snapshot.plan) setPlan(snapshot.plan);
     if (['completed', 'failed', 'cancelled', 'interrupted'].includes(snapshot.status)) {
@@ -279,6 +437,7 @@ export default function App() {
     }
   }
   function connect(runId: string, token: number) {
+    discardDelta();
     stream.current?.close();
     seq.current = 0;
     const es = new EventSource(`/api/runs/${runId}/events`);
@@ -296,10 +455,13 @@ export default function App() {
         seq.current = e.seq;
         const p = e.payload as any;
         if (e.type === 'snapshot' || e.type === 'done') applySnapshot(p);
-        else if (e.type === 'text_delta')
-          setRun((r) => (r ? { ...r, text: r.text + (p.delta || '') } : r));
+        else if (e.type === 'text_delta') {
+          pendingDelta.current += p.delta || '';
+          if (!deltaTimer.current) deltaTimer.current=setTimeout(()=>{if(token===generation.current) flushDelta();else discardDelta();},120);
+        }
         else if (e.type === 'plan') setPlan(p);
         else if (e.type === 'claims') setRun((r) => (r ? { ...r, claims: p.items } : r));
+        else if (e.type === 'keywords') setRun((r) => (r ? { ...r, keywords: p.items } : r));
         else if (e.type === 'evidence') setRun((r) => (r ? { ...r, evidence: p.items } : r));
         else if (e.type === 'document_progress')
           setToolStatus(
@@ -320,6 +482,7 @@ export default function App() {
       'plan',
       'tool',
       'claims',
+      'keywords',
       'evidence',
       'done',
       'error',
@@ -340,6 +503,7 @@ export default function App() {
     setError('');
     setQuestion('');
     setPendingQuestion(text);
+    followBottom.current=true;setShowLatest(false);
     setMessages((ms) => [...ms, { role: 'user', text }]);
     const token = generation.current;
     try {
@@ -403,6 +567,7 @@ export default function App() {
     const restored = await api<any>(`/sessions/${snapshot.sessionId}`);
     if (token !== generation.current) return;
     stream.current?.close();
+    discardDelta();followBottom.current=true;setJumpRequest(n=>n+1);
     setSession(snapshot.sessionId);
     setMessages(restored.messages || [{ role: 'user', text: snapshot.question }, { role: 'assistant', text: snapshot.text, run: snapshot }]);
     setPlan(restored.plan ?? snapshot.plan);
@@ -517,6 +682,22 @@ export default function App() {
               <span>{label}</span>
             </button>
           ))}
+          <button
+            className={`nav-button ${activeWorkbench && tab === 'cards' ? 'selected' : ''}`}
+            aria-current={activeWorkbench && tab === 'cards' ? 'page' : undefined}
+            onClick={() => openKnowledge('cards')}
+          >
+            <Layers size={17} />
+            <span>知识卡片与复习</span>
+          </button>
+          <button
+            className={`nav-button ${activeWorkbench && tab === 'notes' && globalNotes ? 'selected' : ''}`}
+            aria-current={activeWorkbench && tab === 'notes' && globalNotes ? 'page' : undefined}
+            onClick={() => openKnowledge('notes')}
+          >
+            <NotebookPen size={17} />
+            <span>我的笔记</span>
+          </button>
         </nav>
         <button
           className="import-button"
@@ -524,17 +705,18 @@ export default function App() {
           onClick={() => upload.current?.click()}
         >
           <Plus size={17} />
-          {uploading ? '导入处理中…' : '导入论文'}
-          <kbd>PDF</kbd>
+          {uploading ? '正在导入…' : '导入资料'}
+          <kbd>文件</kbd>
         </button>
         <input
           hidden
           ref={upload}
           type="file"
-          accept="application/pdf,.pdf"
+          accept=".pdf,.txt,.md,.markdown,.docx,.png,.jpg,.jpeg"
+          multiple
           onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void importPaper(f);
+            const files = Array.from(e.target.files || []);
+            if (files.length) void importFiles(files);
             e.target.value = '';
           }}
         />
@@ -624,7 +806,7 @@ export default function App() {
                   {step.prerequisites.length > 0 && (
                     <small>前置：{step.prerequisites.join('、')}</small>
                   )}
-                  <Sources refs={step.sourceRefs} onSource={(s) => void locate(s)} />
+                  <Sources refs={step.sourceRefs} onSource={openSourceRef} />
                   <div className="plan-actions">
                     <button
                       disabled={i === 0 || busy}
@@ -691,7 +873,11 @@ export default function App() {
             </span>
             <h1>
               {activeWorkbench
-                ? tab === 'search'
+                ? tab === 'cards'
+                  ? '知识卡片与复习'
+                  : tab === 'notes' && globalNotes
+                    ? '我的笔记本'
+                    : tab === 'search'
                   ? '查找知识'
                   : selected?.title || '我的知识工作台'
                 : {
@@ -797,6 +983,9 @@ export default function App() {
             {notice}
           </p>
         )}
+        {uploading && <p className="notice-banner" role="status">正在接收文件 · {importProgress}</p>}
+        {activeWorkbench && selected?.conversionNote && <p className="conversion-banner">{selected.conversionNote}</p>}
+        {activeWorkbench && tab === 'read' && <details className="answer-format-help"><summary>正文支持：数学公式 · 流程图 · 表格 · 代码示例</summary><p>可以直接要求助手“结合公式解释”或“画出过程图”。公式会排版显示，Mermaid 图会绘制，普通代码可复制但不会执行。讲解示意图不代替论文原图，关键结论仍可点出处核对。</p></details>}
         {activeWorkbench && selected && tab !== 'search' && (
           <div className="coverage">
             <span className={`status-dot ${selected.status}`} />
@@ -813,7 +1002,9 @@ export default function App() {
             )}
           </div>
         )}
-        <div className="content-scroll" ref={contentScroll}>
+        <div className="content-scroll" ref={contentScroll} onMouseUp={captureSelection}
+          onWheel={e=>{if(tab==='read' && e.deltaY<0){followBottom.current=false;setShowLatest(true);}}}
+          onScroll={e=>{setTextSelection(undefined);if(page==='workbench' && tab==='read'){const el=e.currentTarget;const up=el.scrollTop<lastScrollTop.current-1;const down=el.scrollTop>lastScrollTop.current+1;const near=el.scrollHeight-el.scrollTop-el.clientHeight<100;if(up||!near)followBottom.current=false;else if(near&&(down||followBottom.current))followBottom.current=true;lastScrollTop.current=el.scrollTop;setShowLatest(!followBottom.current);}}}>
           {page === 'home' ? (
             <HomePage
               papers={papers}
@@ -821,30 +1012,32 @@ export default function App() {
               onChoose={(p) => void choose(p)}
               onImport={() => upload.current?.click()}
               onNavigate={navigate}
+              onOpenKnowledge={openKnowledge}
               uploading={uploading}
             />
           ) : page === 'guide' ? (
             <GuidePage onNavigate={navigate} />
           ) : tab === 'notes' ? (
             <Notes
-              paper={selected}
+              key={globalNotes ? 'all-notes' : selected?.paperId || 'all-notes'}
+              paper={globalNotes ? undefined : selected}
               requestedNoteId={source?.kind === 'note' ? source.objectId : undefined}
               requestedSource={source?.kind === 'note' ? source : undefined}
               seed={noteSeed}
-              onSource={(s) => void locate(s)}
+              onSource={openSourceRef}
               onCard={setCardDraft}
             />
           ) : tab === 'cards' ? (
             <Cards
               refreshKey={cardRevision}
               requestedSource={source?.kind === 'card' ? source : undefined}
-              onSource={(s) => void locate(s)}
+              onSource={openSourceRef}
               onNew={() => setCardDraft({ front: '', back: '', origin: 'manual' })}
             />
           ) : tab === 'graph' ? (
-            <Graph onSource={(s) => void locate(s)} />
+            <Graph onSource={openSourceRef} />
           ) : tab === 'search' ? (
-            <Search onSource={(s) => void locate(s)} />
+            <Search onSource={openSourceRef} />
           ) : (
             <>
               <div className={`welcome ${messages.length ? 'compact' : ''}`}>
@@ -897,26 +1090,17 @@ export default function App() {
               </section>}
               <div className="conversation">
                 {messages.map((m, i) => (
-                  <article key={i} className={`message ${m.role}`}>
+                  <article key={i} data-message-index={i} className={`message ${m.role}`}>
                     <div className="message-label">
                       {m.role === 'user' ? '你' : 'ScholarPi'}
                       {m.run && (
                         <span className="tag">{statusLabel[m.run.status] || m.run.status}</span>
                       )}
                     </div>
-                    <div className="prose">
-                      <Markdown
-                        text={m.text || '本次任务没有生成讲解内容。'}
-                        onSourceId={(id) => {
-                          void api<{ sourceRef: SourceRef }>(`/sources/${id}`)
-                            .then((s) => locate(s.sourceRef))
-                            .catch((e) => setError(e.message));
-                        }}
-                      />
-                    </div>
+                    {m.role==='assistant'?<AnswerContent text={m.text || '本次任务没有生成讲解内容。'} run={m.run} answerId={m.run?.runId||`${session}:${i}`} onSourceId={openAnswerSource} onCreateTerm={onCreateTerm} onPrepare={prepareCard}/>:<div className="prose"><Markdown text={m.text} /></div>}
                     {m.role === 'assistant' && (
                       <>
-                        <Sources refs={evidenceRefs(m.run)} onSource={(s) => void locate(s)} />
+                        <Sources refs={evidenceRefs(m.run)} onSource={openSourceRef} />
                         {m.run?.claims && (
                           <details className="claims">
                             <summary>论断与证据 · {m.run.claims.length}</summary>
@@ -933,31 +1117,11 @@ export default function App() {
                                   · {c.support}
                                 </span>
                                 <p>{c.text}</p>
-                                <Sources refs={c.sourceRefs} onSource={(s) => void locate(s)} />
+                                <Sources refs={c.sourceRefs} onSource={openSourceRef} />
                               </div>
                             ))}
                           </details>
                         )}
-                        {m.run?.keywords?.length ? (
-                          <div className="sources">
-                            {m.run.keywords.map((k, i) => (
-                              <button
-                                key={i}
-                                onClick={() =>
-                                  setCardDraft({
-                                    front: k.term,
-                                    back: k.explanation,
-                                    origin: 'keyword',
-                                    keyword: k.term,
-                                    sourceRef: k.sourceRefs[0],
-                                  })
-                                }
-                              >
-                                {k.term} ＋卡片
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
                         {m.run?.quiz?.length ? (
                           <details className="claims">
                             <summary>可选理解题 · {m.run.quiz.length}</summary>
@@ -967,7 +1131,7 @@ export default function App() {
                                 <details>
                                   <summary>查看参考解释</summary>
                                   <Markdown text={q.answer} />
-                                  <Sources refs={q.sourceRefs} onSource={(s) => void locate(s)} />
+                                  <Sources refs={q.sourceRefs} onSource={openSourceRef} />
                                 </details>
                               </div>
                             ))}
@@ -994,10 +1158,8 @@ export default function App() {
                     <div className="message-label">
                       ScholarPi <span className="tag pulse">{statusLabel[run.status]}</span>
                     </div>
-                    <div className="prose">
-                      <Markdown text={run.text || '正在整理上下文与来源…'} />
-                    </div>
-                    <Sources refs={evidenceRefs(run)} onSource={(s) => void locate(s)} />
+                    <AnswerContent text={run.text || '正在整理上下文与来源…'} run={run} answerId={run.runId} streaming={busy} onSourceId={openAnswerSource} onCreateTerm={onCreateTerm} onPrepare={prepareCard}/>
+                    <Sources refs={evidenceRefs(run)} onSource={openSourceRef} />
                     {toolStatus && <p className="small muted">{toolStatus}</p>}
                   </article>
                 )}
@@ -1006,6 +1168,7 @@ export default function App() {
             </>
           )}
         </div>
+        {activeWorkbench && tab==='read' && showLatest && <button className="jump-to-latest" onClick={jumpToLatest}>↓ 回到最新内容{busy?' · 正在生成':''}</button>}
         {activeWorkbench && tab === 'read' && (
           <form
             className="composer"
@@ -1087,16 +1250,19 @@ export default function App() {
               : selected
           }
           source={source}
-          onClose={() => setViewer(false)}
+          onClose={closeViewer}
         />
       )}{' '}
       {cardDraft && (
         <CardDialog
           draft={cardDraft}
           onClose={() => setCardDraft(undefined)}
-          onSaved={() => setCardRevision((v) => v + 1)}
+          onSaved={() => { setCardRevision((v) => v + 1); setNotice('知识卡片已保存。打开“解释卡片”，先回忆再翻面复习。'); }}
         />
       )}
+      {draggingFile && <div className="file-drop-overlay" aria-live="polite"><div><Upload size={46}/><h2>{uploading?'正在接收文件…':busy?'请先结束当前生成':'松开即可导入资料'}</h2><p>PDF · TXT · Markdown · DOCX · PNG · JPG</p><span>可一次拖入多个文件 · 相同文件自动识别 · Esc 取消</span></div></div>}
+      {textSelection && <div className="selection-card-toolbar" style={{left:textSelection.left,top:textSelection.top}} onMouseDown={e=>e.preventDefault()}><button className="primary" onClick={()=>void saveSelectionCard()}>＋ 一键建卡</button><button onClick={()=>{setCardDraft({front:textSelection.text.slice(0,80),back:textSelection.text,origin:'selection',sourceRef:textSelection.sourceRef});setTextSelection(undefined);}}>调整后建卡</button><button aria-label="关闭选词建卡" onClick={()=>setTextSelection(undefined)}>×</button></div>}
+      {cardToast && <div className="card-saved-toast" role="status"><span>{cardToast}</span><button onClick={()=>{setCardToast('');openKnowledge('cards');}}>打开卡片</button><button aria-label="关闭建卡提示" onClick={()=>setCardToast('')}>×</button></div>}
     </div>
   );
 }

@@ -1,32 +1,39 @@
 import { useEffect, useState } from 'react';
-import { ArrowRight, BookOpen, FileText, HelpCircle, Search, Layers, Download } from 'lucide-react';
+import { ArrowRight, BookOpen, FileText, HelpCircle, Search, Layers, Download, UploadCloud } from 'lucide-react';
 import type { Paper, RunSnapshot, StoredRunEvent } from '../../../packages/contracts';
 import { Markdown } from './Knowledge';
 import { api } from './api';
 
 export type PageView = 'home' | 'workbench' | 'guide';
-export function HomePage({ papers, selected, onChoose, onImport, onNavigate, uploading }: {
+export function HomePage({ papers, selected, onChoose, onImport, onNavigate, onOpenKnowledge, uploading }: {
   papers: Paper[]; selected?: Paper; onChoose: (p: Paper) => void; onImport: () => void;
   onNavigate: (p: PageView) => void; uploading: boolean;
+  onOpenKnowledge: (kind: 'notes' | 'cards') => void;
 }) {
   return <div className="home-page">
     <section className="home-hero">
       <span className="section-kicker">论文阅读与知识工作台</span>
       <h2>读懂论文，<br />留下自己的理解。</h2>
-      <p>上传一份 PDF，自由决定怎么读。相同文件按 SHA-256 指纹打开已有论文，保存的讲解、出处和笔记都在同一工作台。</p>
+      <p>读论文不止拿到一份总结。核对原文，把自己的解释留下来，再用正反面知识卡片回忆和复习。</p>
       <div className="home-actions">
-        <button className="primary" onClick={onImport} disabled={uploading}><BookOpen size={17} />{uploading ? '正在识别文件…' : '上传论文 PDF'}</button>
+        <button className="primary" onClick={onImport} disabled={uploading}><BookOpen size={17} />{uploading ? '正在接收文件…' : '上传论文或文件'}</button>
+        <button onClick={()=>onOpenKnowledge('cards')}><Layers size={17}/>知识卡片与复习</button>
         {selected && <button onClick={() => onChoose(selected)}>继续阅读 <ArrowRight size={16} /></button>}
       </div>
+      <p className="home-drop-hint"><UploadCloud size={16}/>也可以直接拖到页面任意位置，松开即导入。支持 PDF、TXT、Markdown、DOCX、PNG/JPG。</p>
       <button className="text-link" onClick={() => onNavigate('guide')}><HelpCircle size={15} />第一次使用，先看操作指南</button>
       <img className="home-poster" src="/media/scholarpi-poster.png" alt="ScholarPi：读懂论文，留下理解" />
+    </section>
+    <section className="home-memory-feature">
+      <div><span className="section-kicker">理解一次，之后还能想起来</span><h2>把你的理解，<br/>变成会再次遇见的卡片。</h2><p>正面留问题，反面存自己的解释。先回忆再揭晓，按真实记忆安排下次复习。原文以后变了，卡片仍保留你当时确认的理解。</p><div className="home-actions"><button className="primary" onClick={()=>onOpenKnowledge('cards')}><Layers size={17}/>打开知识卡片</button><button onClick={()=>onOpenKnowledge('notes')}>我的笔记本 <ArrowRight size={16}/></button></div><small>解释独立保存 · 来源可回看 · 退出不改变复习进度</small></div>
+      <div className="home-card-stack" aria-hidden="true"><div className="stack-paper stack-back"/><div className="stack-paper stack-middle"/><div className="stack-paper stack-front"><span>正面 · 先回忆</span><h3>这一段知识，<br/>你能用自己的话<br/>讲出来吗？</h3><div>想一想 → 揭晓解释 → 自评</div><footer>留住理解，而不只是收藏</footer></div></div>
     </section>
     <section className="home-section">
       <div className="section-heading"><h3>我的论文</h3><span>{papers.length} 篇已导入</span></div>
       <p className="muted">打开已导入论文，继续阅读或查看自己的已保存讲解。同一份原 PDF 再次上传时，程序会识别文件并打开已有记录。</p>
       <div className="home-library">{papers.filter(p => p.status !== 'deleted').map(p => <div className="library-entry" key={p.paperId}>
         <button onClick={() => onChoose(p)}><FileText size={20} /><span><strong>{p.title}</strong><small>{p.pageCount} 页 · {p.status === 'ready' ? '可阅读' : '查看处理进度'}</small></span><ArrowRight size={16} /></button>
-        <a href={`/api/papers/${p.paperId}/pdf?revisionId=${p.revisionId}`} download={`${p.title}.pdf`}><Download size={13} /> 下载这份原始 PDF</a>
+        <a href={`/api/papers/${p.paperId}/pdf?revisionId=${p.revisionId}`} download={`${p.title}.pdf`}><Download size={13} /> {p.sourceFormat && p.sourceFormat !== 'pdf' ? '下载 PDF 阅读版' : '下载这份原始 PDF'}</a>
       </div>)}</div>
       {!papers.length && <p className="muted">还没有论文，从上方“上传论文 PDF”开始。</p>}
     </section>
@@ -41,7 +48,7 @@ export function HomePage({ papers, selected, onChoose, onImport, onNavigate, upl
     </section>
     <section className="home-feature-grid">
       <article><BookOpen size={19} /><h3>讲解和原文一起看</h3><p>选择希望达到的效果，Agent 按问题读取原文和图表。</p></article>
-      <article><Layers size={19} /><h3>理解由你确认</h3><p>解释存成笔记与卡片，之后修改来源也保留原解释。</p></article>
+      <article><Layers size={19} /><h3>像卡片一样复习</h3><p>先看问题、翻面核对、自评记忆；不是一次展开全部答案。</p></article>
       <article><Search size={19} /><h3>记录可以再次打开</h3><p>已完成的结果来自正常运行，可以继续提问、保存和找回。</p></article>
     </section>
   </div>;

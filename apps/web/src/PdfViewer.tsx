@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import {
   ChevronLeft,
   ChevronRight,
@@ -12,7 +12,7 @@ import * as pdfjs from 'pdfjs-dist';
 import worker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 import type { Paper, SourceRef } from '../../../packages/contracts';
 pdfjs.GlobalWorkerOptions.workerSrc = worker;
-export default function PdfViewer({
+export default memo(function PdfViewer({
   paper,
   source,
   onClose,
@@ -47,11 +47,14 @@ export default function PdfViewer({
   useEffect(() => {
     const element = container.current;
     if (!element) return;
-    const observer = new ResizeObserver((entries) =>
-      setViewportWidth(entries[0].contentRect.width),
-    );
+    let frame=0;
+    const observer = new ResizeObserver((entries) => {
+      const width=Math.round(entries[0].contentRect.width);
+      cancelAnimationFrame(frame);
+      frame=requestAnimationFrame(()=>setViewportWidth(previous=>Math.abs(previous-width)>1?width:previous));
+    });
     observer.observe(element);
-    return () => observer.disconnect();
+    return () => {observer.disconnect();cancelAnimationFrame(frame);};
   }, [paper?.paperId]);
   useEffect(() => {
     if (source?.page) setPage(source.page);
@@ -198,4 +201,4 @@ export default function PdfViewer({
       )}
     </section>
   );
-}
+});

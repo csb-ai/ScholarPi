@@ -52,30 +52,30 @@ npm run dev
 
 ```mermaid
 flowchart TB
-    User[读者：选择问题与讲解效果] --> Web[React 工作台]
-    Web --> API[Fastify HTTP 与 SSE]
-    API --> Agent[一个 Pi Agent]
-    Plan[ReadingPlan：可调整路线] --> Agent
-    Skills[Skills：任务说明] --> Agent
-    Agent <-->|文字与原页图像| Model[Agnes 模型 API]
-    Agent -->|学术业务工具| MCP[一个 Python MCP 服务]
-    API -->|上传、保存、复习| MCP
-    MCP --> Parse[PyMuPDF 与 Docling]
-    MCP --> Search[关键词与向量检索、来源关联]
-    MCP --> DB[(SQLite 业务数据)]
-    Agent --> Session[Pi 会话 JSONL]
-    API --> Trace[运行事件 JSONL]
-    API -->|持续推送| Web
+    User["读者：选择问题与讲解效果"] --> Web["React 工作台"]
+    Web --> API["Fastify HTTP 与 SSE"]
+    API --> Agent["一个 Pi Agent"]
+    Plan["ReadingPlan：可调整路线"] --> Agent
+    Skills["Skills：任务说明"] --> Agent
+    Agent <-->|"文字与原页图像"| Model["Agnes 模型 API"]
+    Agent -->|"学术业务工具"| MCP["一个 Python MCP 服务"]
+    API -->|"上传、保存、复习"| MCP
+    MCP --> Parse["PyMuPDF 与 Docling"]
+    MCP --> Search["关键词与向量检索、来源关联"]
+    MCP --> DB[("SQLite 业务数据")]
+    Agent --> Session["Pi 会话 JSONL"]
+    API --> Trace["运行事件 JSONL"]
+    API -->|"持续推送"| Web
 ```
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Web as 工作台
-    participant API as Fastify
-    participant Knowledge as Python 知识服务
-    participant Agent as 一个 Pi Agent
-    participant Model as 模型 API
+    participant Web as "工作台"
+    participant API as "Fastify"
+    participant Knowledge as "Python 知识服务"
+    participant Agent as "一个 Pi Agent"
+    participant Model as "模型 API"
     Web->>API: 上传 PDF
     API->>Knowledge: 保存上传文件并提交导入
     Knowledge->>Knowledge: 计算 SHA-256，查已有文件和版本
@@ -203,11 +203,11 @@ Invoke-RestMethod http://127.0.0.1:7331/api/health
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Web as 工作台
-    participant API as Fastify API
-    participant Knowledge as Python 知识服务
-    participant DB as SQLite
-    participant Index as 后台索引任务
+    participant Web as "工作台"
+    participant API as "Fastify API"
+    participant Knowledge as "Python 知识服务"
+    participant DB as "SQLite"
+    participant Index as "后台索引任务"
     Web->>API: 保存笔记、幂等键与期望版本
     API->>Knowledge: app_operation / save_note
     Knowledge->>DB: 事务内检查请求身份与当前版本

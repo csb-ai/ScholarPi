@@ -61,24 +61,24 @@ npm run dev
 
 ```mermaid
 flowchart TB
-    Web[React：讲解、原文、笔记、卡片] --> API[Fastify：请求、SSE、状态与复用]
-    API --> Agent[Pi：单 Agent Loop]
-    Plan[可调整 ReadingPlan] --> Agent
-    Skill[按任务加载的 Markdown Skills] --> Agent
-    Agent <-->|文字、图像、动作| Model[Agnes 模型 API]
-    Agent --> FC[标准 Function Calling]
-    Agent --> Code[可选 JSON Code Mode]
-    FC --> MCP[一个 Python MCP 服务]
+    Web["React：讲解、原文、笔记、卡片"] --> API["Fastify：请求、SSE、状态与复用"]
+    API --> Agent["Pi：单 Agent Loop"]
+    Plan["可调整 ReadingPlan"] --> Agent
+    Skill["按任务加载的 Markdown Skills"] --> Agent
+    Agent <-->|"文字、图像、动作"| Model["Agnes 模型 API"]
+    Agent --> FC["标准 Function Calling"]
+    Agent --> Code["可选 JSON Code Mode"]
+    FC --> MCP["一个 Python MCP 服务"]
     Code --> MCP
-    API -->|应用业务操作| MCP
-    MCP --> PDF[PDF：PyMuPDF 与 Docling]
-    MCP --> Retrieval[FTS5、向量、RRF 与有界来源图]
-    MCP --> DB[(SQLite：唯一业务写入服务)]
-    Agent --> Sessions[Pi JSONL：原始会话]
-    API --> Events[JSONL：运行事件]
-    API --> FSRS[ts-fsrs：计算下次复习]
-    FSRS -->|通过业务接口保存| MCP
-    API -->|持续推送| Web
+    API -->|"应用业务操作"| MCP
+    MCP --> PDF["PDF：PyMuPDF 与 Docling"]
+    MCP --> Retrieval["FTS5、向量、RRF 与有界来源图"]
+    MCP --> DB[("SQLite：唯一业务写入服务")]
+    Agent --> Sessions["Pi JSONL：原始会话"]
+    API --> Events["JSONL：运行事件"]
+    API --> FSRS["ts-fsrs：计算下次复习"]
+    FSRS -->|"通过业务接口保存"| MCP
+    API -->|"持续推送"| Web
 ```
 
 网页不直接操作数据库，模型不直接读宿主文件。HTTP 后端管理会话和页面请求；Python 服务处理论文、检索及业务写入；Pi 把模型和这些能力连成一次阅读。
@@ -88,11 +88,11 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Web as React 工作台
-    participant API as Fastify
-    participant Knowledge as Python 知识服务
-    participant Agent as Pi Agent
-    participant Model as 模型
+    participant Web as "React 工作台"
+    participant API as "Fastify"
+    participant Knowledge as "Python 知识服务"
+    participant Agent as "Pi Agent"
+    participant Model as "模型"
     Web->>API: 上传 PDF
     API->>Knowledge: 文件路径与原始文件名
     Knowledge->>Knowledge: SHA-256 与已有版本查询
@@ -133,11 +133,11 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     autonumber
-    participant User as 读者
-    participant Web as 编辑器与卡片
-    participant API as Fastify
-    participant Knowledge as 知识服务
-    participant DB as SQLite
+    participant User as "读者"
+    participant Web as "编辑器与卡片"
+    participant API as "Fastify"
+    participant Knowledge as "知识服务"
+    participant DB as "SQLite"
     User->>Web: 确认解释，保存笔记
     Web->>API: 内容、来源、期望版本与幂等 key
     API->>Knowledge: 保存业务请求
@@ -157,3 +157,33 @@ sequenceDiagram
         Knowledge->>DB: 更新来源可用状态，保留解释与复习记录
     end
 ```
+
+## 笔记和卡片的新用法
+
+左侧常驻主导航可直接打开“我的笔记”或“知识卡片与复习”，与首页、使用指南同级，不需要先打开论文；侧栏笔记入口展示全部笔记。首页也保留快捷入口。笔记先选列表，再打开编辑；保存会显示结果与时间，取消或返回时对未保存内容作提示。
+
+卡片正面是问题，先自己回忆，再点击揭晓反面。浏览不会改变日程；正式复习时按“忘记／吃力／记得／熟练”自评，保存成功后进入下一张。暂时跳过、关闭或退出都不会替你提交评级。
+
+FSRS（Free Spaced Repetition Scheduler，中文可称自由间隔重复调度器）根据自评历史安排下次复习，不是替你判断已经学懂。卡片解释独立保存，原文或关键词删除仅改变依据提示。
+
+流程图由页面本地渲染，点“查看流程图代码”才展开源码。
+
+### 连续复习的快捷操作
+
+打开卡片后：左右键换卡、空格翻面，揭晓后按 1—4 自评，Esc 退出。也可以点击对应按钮。浏览时自评才改变日程，输入框和保存中不触发快捷操作。
+
+每个评级按钮下显示该卡经 FSRS 算法计算的预计间隔，实际日期在提交时重新计算。学习中、重新学习且今天稍后到期的卡片，可以在本轮等到时间再见；随时退出也会保留已经保存的日程。
+
+卡片用标签、图标和不同色调区分新卡、学习中、重新学习、今日待复习、逾期与已安排，可点击状态筛选。底部只简要显示创建日期，旧记录的估计日期标“约”。
+
+### 拖入文件与正文显示
+
+文件可以直接拖到页面任意位置，松开导入，也可点上传并多选。支持 PDF、TXT、Markdown、DOCX、PNG/JPG；非 PDF 会生成阅读版，DOCX 目前取正文文字，原图表和复杂版式请导出 PDF。生成页码与原文件版式可能不同，页面会注明。
+
+讲解支持标题、列表、表格、数学公式、Mermaid 流程图和可复制的代码示例。可直接要求助手“画一个过程图”或“结合公式解释”。自己整理的图是讲解示意，关键结论仍需原文核对；页面不会执行普通代码。
+
+### 看旧内容与快速建卡
+
+进入对话会定位到末尾。生成时往上滚动即可暂停自动跟随，点击“回到最新内容”再跟随。公式和表格在正文内部显示，不挤动论文侧栏。
+
+讲解前的术语候选可直接点击保存卡片，正文虚线标出的术语也可点。也可选中文字，使用浮动的“一键建卡”或“调整后建卡”。成功会有提示，可直接打开知识卡片；候选解释属于待核对的个人理解，不代替论文证据。

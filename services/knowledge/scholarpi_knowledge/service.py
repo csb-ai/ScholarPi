@@ -132,6 +132,17 @@ class KnowledgeService:
                         corpusFingerprint=fingerprint.hexdigest())
 
     def card_status(self, card):
+        if not card.get('createdAt'):
+            # Historical cards have no creation field. Only expose an explicitly
+            # estimated date from their original, never-reviewed state.
+            try:
+                original = self.store.get(card['cardId'], 'card', '1', include_deleted=True)
+                state = original.get('fsrsState', {})
+                if state.get('reps', 0) == 0 and state.get('due'):
+                    card['createdAt'] = state['due']
+                    card['createdAtEstimated'] = True
+            except BusinessError:
+                pass
         ref = card.get('sourceRef')
         if not ref:
             card['sourceStatus'] = 'manual'
@@ -205,7 +216,7 @@ class KnowledgeService:
             oid = uid()
             # Only library-compatible empty metadata here; scheduling remains ts-fsrs in Node.
             initial = dict(due=now(), stability=0, difficulty=0, elapsed_days=0, scheduled_days=0, learning_steps=0, reps=0, lapses=0, state=0)
-            item = dict(cardId=oid, revision=1, front=args['front'], back=args['back'], origin=args.get('origin', 'manual'), sourceStatus='active' if ref else 'manual', fsrsState=args.get('fsrs_state') or initial)
+            item = dict(cardId=oid, revision=1, front=args['front'], back=args['back'], createdAt=now(), origin=args.get('origin', 'manual'), sourceStatus='active' if ref else 'manual', fsrsState=args.get('fsrs_state') or initial)
             if ref:
                 item['sourceRef'] = ref
             if args.get('keyword'):

@@ -4,15 +4,16 @@ import json
 from pathlib import Path
 import pymupdf
 from .store import BusinessError, uid
+from .import_formats import SUPPORTED, conversion_note, to_reading_pdf
 
 
 def confined_upload(store, path):
     candidate = Path(path).resolve()
     uploads = (store.data / 'uploads').resolve()
-    if not candidate.is_relative_to(uploads) or not candidate.is_file() or candidate.suffix.lower() != '.pdf':
-        raise BusinessError('INVALID_ARGUMENT', 'PDF must be an existing file in app/data/uploads')
+    if not candidate.is_relative_to(uploads) or not candidate.is_file() or candidate.suffix.lower() not in SUPPORTED:
+        raise BusinessError('INVALID_ARGUMENT', '请选择资料目录内的 PDF、TXT、Markdown、DOCX、PNG 或 JPG。')
     if candidate.stat().st_size > 100 * 1024 * 1024:
-        raise BusinessError('INVALID_ARGUMENT', 'PDF exceeds 100 MiB; split into volumes')
+        raise BusinessError('INVALID_ARGUMENT', '文件超过 100 MiB，请分卷导入。')
     return candidate
 
 
@@ -29,15 +30,21 @@ def prepare(store, path, title=None, paper_id=None, original_name=None):
         previous = json.loads(row[0])
         if previous.get('fileHash') == digest:
             return previous, None
-    with pymupdf.open(path) as pdf:
-        if pdf.is_encrypted or not 1 <= len(pdf) <= 300:
-            raise BusinessError('INVALID_ARGUMENT', 'Encrypted PDF or unsupported page count (1–300)')
-        count = len(pdf)
     pdfdir = store.data / 'pdf'
     pdfdir.mkdir(exist_ok=True)
     target = pdfdir / (digest + '.pdf')
     if not target.exists():
-        shutil.copyfile(path, target)
+        if path.suffix.lower() == '.pdf':
+            shutil.copyfile(path, target)
+        else:
+            to_reading_pdf(path, target)
+    try:
+        with pymupdf.open(target) as pdf:
+            if pdf.is_encrypted or not 1 <= len(pdf) <= 300:
+                raise BusinessError('INVALID_ARGUMENT', '加密文件或页数超出 1—300 页范围。')
+            count = len(pdf)
+    except pymupdf.FileDataError as exc:
+        raise BusinessError('INVALID_ARGUMENT', '文件内容无法读取，请确认格式或重新导出。') from exc
     if paper_id:
         store.get(paper_id, 'paper')
     else:
@@ -47,6 +54,8 @@ def prepare(store, path, title=None, paper_id=None, original_name=None):
     revision = uid()
     paper = dict(paperId=paper_id, revisionId=revision, title=title or path.stem, fileHash=digest, pageCount=count,
                  status='queued', coverage=dict(processedPages=[], pendingPages=list(range(1, count + 1)), scannedPages=[]), sections=[], originalName=original_name)
+    paper['sourceFormat'] = path.suffix.lower().lstrip('.')
+    paper['conversionNote'] = conversion_note(path.suffix.lower())
     with store.transaction():
         store.clear_index(paper_id)
         store.put(paper_id, 'paper', revision, paper)

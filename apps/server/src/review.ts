@@ -30,3 +30,14 @@ export function reviewState(value: unknown, rating: number, now = new Date()) {
     fsrsVersion: REVIEW_VERSION,
   };
 }
+
+export function previewReview(value: unknown, now = new Date()) {
+  return {
+    calculatedAt: now.toISOString(),
+    fsrsVersion: REVIEW_VERSION,
+    options: [1, 2, 3, 4].map(rating => {
+      const next = reviewState(value, rating, now);
+      return { rating, due: next.due, intervalSeconds: Math.max(0, Math.round((Date.parse(next.due) - now.getTime()) / 1000)) };
+    }),
+  };
+}

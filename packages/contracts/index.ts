@@ -13,6 +13,8 @@ export type Paper = {
   revisionId: string;
   title: string;
   fileHash: string;
+  sourceFormat?: string;
+  conversionNote?: string;
   pageCount: number;
   status: 'queued' | 'processing' | 'ready' | 'partial' | 'failed' | 'deleted';
   coverage: { processedPages: number[]; pendingPages: number[]; scannedPages: number[] };
@@ -64,6 +66,8 @@ export type KnowledgeCard = {
   sourceStatus: 'active' | 'keyword_deleted' | 'source_deleted' | 'manual';
   fsrsState: StoredFSRS | Record<string, never>;
   due?: string;
+  createdAt?: string;
+  createdAtEstimated?: boolean;
 };
 export type EvidenceClaim = {
   claimId: string;

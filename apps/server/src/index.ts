@@ -7,7 +7,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { config, ROOT, cleanError } from './config.js';
 import { knowledge, BusinessError } from './mcp.js';
 import { scholar } from './runtime.js';
-import { emptyState, reviewState } from './review.js';
+import { emptyState, reviewState, previewReview } from './review.js';
 import type {
   ReadingPlan,
   KnowledgeCard,
@@ -71,19 +71,22 @@ app.get('/api/health', async () => ({
 app.get('/api/papers', async () => op('list_papers'));
 app.post('/api/papers', async (request, reply) => {
   const file = await request.file();
-  if (!file) throw new BusinessError('INVALID_ARGUMENT', '请选择PDF');
+  if (!file) throw new BusinessError('INVALID_ARGUMENT', '请选择或拖入资料文件');
+  const extension = path.extname(file.filename).toLowerCase();
+  if (!['.pdf','.txt','.md','.markdown','.docx','.png','.jpg','.jpeg'].includes(extension))
+    throw new BusinessError('INVALID_ARGUMENT', '支持 PDF、TXT、Markdown、DOCX、PNG、JPG；其他格式请先导出为 PDF。');
   const parts: Buffer[] = [];
   for await (const chunk of file.file) parts.push(chunk);
-  if (file.file.truncated) throw new BusinessError('INVALID_ARGUMENT', 'PDF超过100MiB');
+  if (file.file.truncated) throw new BusinessError('INVALID_ARGUMENT', '文件超过100MiB');
   const bytes = Buffer.concat(parts);
-  if (bytes.subarray(0, 5).toString() !== '%PDF-')
+  if (extension === '.pdf' && bytes.subarray(0, 5).toString() !== '%PDF-')
     throw new BusinessError('INVALID_ARGUMENT', '文件不是有效PDF');
   const hash = createHash('sha256').update(bytes).digest('hex');
-  const target = path.join(ROOT, 'data/uploads', hash + '.pdf');
+  const target = path.join(ROOT, 'data/uploads', hash + extension);
   if (!fs.existsSync(target)) fs.writeFileSync(target, bytes);
   const result = await knowledge.operation<{ duplicate: boolean }>('ingest', {
     path: target,
-    title: file.filename.replace(/\.pdf$/i, ''),
+    title: path.basename(file.filename, path.extname(file.filename)),
     original_name: file.filename,
     idempotency_key: hash,
   });
@@ -287,6 +290,15 @@ app.put('/api/cards', (r) => op('edit_card', body(r)));
 app.delete<{ Params: Params }>('/api/cards/:id', (r) =>
   op('delete_card', { card_id: r.params.id }),
 );
+app.get<{ Params: Params; Querystring: { revision?: string } }>('/api/cards/:id/review-preview', async (r, reply) => {
+  reply.header('Cache-Control', 'no-store');
+  const list = await knowledge.operation<{ items: KnowledgeCard[] }>('list_cards');
+  const card = list.items.find(c => c.cardId === r.params.id);
+  if (!card) throw new BusinessError('SOURCE_NOT_FOUND', '卡片不存在');
+  if (r.query.revision !== undefined && r.query.revision !== String(card.revision))
+    throw new BusinessError('CONFLICT', '卡片已更新，请重新载入后查看复习安排');
+  return { cardId: card.cardId, revision: card.revision, ...previewReview(card.fsrsState) };
+});
 app.post<{ Params: Params }>('/api/cards/:id/reviews', async (r) => {
   const b = body(r);
   const key = b.idempotencyKey ?? b.idempotency_key;
